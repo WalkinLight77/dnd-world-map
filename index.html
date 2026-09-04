@@ -130,7 +130,11 @@ let previewTooltip = null;
 
 // Helps separate single-click from double-click.
 let clickTimer = null;
+let mouseIsDown = false;
+let mouseDownPoint = null;
+let mouseDragged = false;
 
+const CLICK_DRAG_TOLERANCE = 6;
 
 // ======================================
 // UI
@@ -492,9 +496,8 @@ document
 // ======================================
 // MEASURE BUTTON
 // ======================================
-
-measureButton
-.addEventListener("click", function () {
+    
+measureButton.addEventListener("click", function () {
 
     if (!pixelsPerMile) {
 
@@ -505,12 +508,16 @@ measureButton
     }
 
 
-    // EXIT TOOL
+    // If Measure mode is already ON,
+    // clicking the button turns it OFF.
     if (mode === "measure") {
 
         finishRoute();
 
         mode = "none";
+
+        // Normal map dragging comes back.
+        map.dragging.enable();
 
         measureButton.innerText =
             "Measure";
@@ -522,10 +529,13 @@ measureButton
     }
 
 
-    // ENTER TOOL
+    // Turn Measure mode ON.
     clearCalibrationMarks();
 
     mode = "measure";
+
+    // Prevent dragging the map while measuring.
+    map.dragging.disable();
 
     measureButton.innerText =
         "Exit Measure";
@@ -534,7 +544,7 @@ measureButton
         "Click anywhere to begin a route.";
 });
 
-
+    
 // ======================================
 // CLEAR BUTTON
 // ======================================
@@ -556,114 +566,30 @@ document
 
 
 // ======================================
-// CLICK HANDLER
+// MOUSE DOWN
 // ======================================
 
-map.on("click", function (event) {
-
-    // Calibration works normally.
-    if (mode === "calibrate") {
-
-        const point =
-            event.latlng;
-
-
-        calibrationPoints.push(point);
-
-
-        const marker =
-            L.circleMarker(point, {
-                radius: 6,
-                weight: 2,
-                fillOpacity: 1
-            })
-            .addTo(map);
-
-
-        calibrationLayers.push(marker);
-
-
-        if (
-            calibrationPoints.length === 2
-        ) {
-
-            const line =
-                L.polyline(
-                    calibrationPoints,
-                    {
-                        weight: 3
-                    }
-                )
-                .addTo(map);
-
-
-            calibrationLayers.push(line);
-
-
-            const pixels =
-                pixelDistance(
-                    calibrationPoints[0],
-                    calibrationPoints[1]
-                );
-
-
-            pixelsPerMile =
-                pixels /
-                CALIBRATION_MILES;
-
-
-            localStorage.setItem(
-                "pixelsPerMile",
-                pixelsPerMile
-            );
-
-
-            mode = "none";
-
-
-            statusText.innerText =
-                "Calibration saved — 50 miles.";
-        }
-
-        return;
-    }
-
+map.on("mousedown", function (event) {
 
     if (mode !== "measure") {
         return;
     }
 
+    // Only care about left mouse button
+    if (
+        event.originalEvent &&
+        event.originalEvent.button !== 0
+    ) {
+        return;
+    }
 
-    /*
-        Slight delay so double-clicking
-        does not accidentally create
-        an unwanted waypoint.
-    */
+    mouseIsDown = true;
+    mouseDragged = false;
 
-    clearTimeout(clickTimer);
-
-
-    const clickedPoint =
-        event.latlng;
-
-
-    clickTimer =
-        setTimeout(function () {
-
-            if (!currentRoute) {
-
-                startRoute(
-                    clickedPoint
-                );
-
-            } else {
-
-                addWaypoint(
-                    clickedPoint
-                );
-            }
-
-        }, 220);
+    mouseDownPoint =
+        map.latLngToContainerPoint(
+            event.latlng
+        );
 });
 
 
@@ -683,17 +609,57 @@ map.on("dblclick", function () {
     finishRoute();
 });
 
-
+    
 // ======================================
-// LIVE STRAIGHT-LINE PREVIEW
+// MOUSE MOVE
 // ======================================
 
 map.on("mousemove", function (event) {
 
-    if (
-        mode !== "measure" ||
-        !currentRoute
-    ) {
+    if (mode !== "measure") {
+        return;
+    }
+
+
+    /*
+        If the player is HOLDING the mouse,
+        we are checking whether they're dragging.
+
+        We DO NOT draw the measuring preview
+        while the button is held.
+    */
+
+    if (mouseIsDown) {
+
+        const currentMousePoint =
+            map.latLngToContainerPoint(
+                event.latlng
+            );
+
+
+        if (
+            mouseDownPoint &&
+            mouseDownPoint.distanceTo(
+                currentMousePoint
+            ) > CLICK_DRAG_TOLERANCE
+        ) {
+
+            mouseDragged = true;
+        }
+
+
+        return;
+    }
+
+
+    /*
+        No route yet.
+
+        Nothing to preview until
+        the first point has been clicked.
+    */
+
+    if (!currentRoute) {
         return;
     }
 
@@ -705,6 +671,11 @@ map.on("mousemove", function (event) {
         event.latlng;
 
 
+    /*
+        Straight-line distance from
+        LAST LOCKED POINT to cursor.
+    */
+
     const segmentMiles =
         milesBetween(
             currentRoute.lastPoint,
@@ -712,16 +683,29 @@ map.on("mousemove", function (event) {
         );
 
 
+    /*
+        Add the previous route distance.
+
+        Example:
+
+        Previous total = 246
+        Cursor is currently 80 miles away
+
+        Live total = 326
+    */
+
     const liveTotal =
         currentRoute.totalMiles +
         segmentMiles;
 
 
     /*
-        IMPORTANT:
-        This is ONE STRAIGHT LINE
-        from the last locked waypoint
-        to the cursor.
+        ONE straight preview line.
+
+        It is temporary.
+
+        It does NOT become permanent
+        until the player clicks.
     */
 
     previewLine =
@@ -739,6 +723,10 @@ map.on("mousemove", function (event) {
         )
         .addTo(map);
 
+
+    /*
+        Live mileage follows the cursor.
+    */
 
     previewTooltip =
         L.tooltip({
@@ -764,6 +752,84 @@ map.on("mousemove", function (event) {
 });
 
 
+// ======================================
+// MOUSE UP
+// ======================================
+
+map.on("mouseup", function (event) {
+
+    if (mode !== "measure") {
+        return;
+    }
+
+
+    if (!mouseIsDown) {
+        return;
+    }
+
+
+    mouseIsDown = false;
+
+
+    /*
+        Player dragged the mouse while
+        holding the button.
+
+        IGNORE IT COMPLETELY.
+
+        No waypoint.
+        No permanent line.
+        No distance added.
+    */
+
+    if (mouseDragged) {
+
+        mouseDragged = false;
+        mouseDownPoint = null;
+
+        return;
+    }
+
+
+    mouseDownPoint = null;
+
+
+    /*
+        This was a genuine click.
+
+        Delay very slightly so double-click
+        can still be used to finish a route.
+    */
+
+    clearTimeout(
+        clickTimer
+    );
+
+
+    const clickedPoint =
+        event.latlng;
+
+
+    clickTimer =
+        setTimeout(function () {
+
+            if (!currentRoute) {
+
+                startRoute(
+                    clickedPoint
+                );
+
+            } else {
+
+                addWaypoint(
+                    clickedPoint
+                );
+            }
+
+        }, 220);
+});
+
+    
 // ======================================
 // ESCAPE
 // ======================================
