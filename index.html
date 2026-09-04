@@ -221,7 +221,7 @@ function updateStatus() {
     if (pixelsPerMile) {
 
         statusText.innerText =
-            "Ready — map calibrated.";
+            "Ready.";
 
     } else {
 
@@ -532,9 +532,6 @@ measureButton.addEventListener("click", function () {
     clearCalibrationMarks();
 
     mode = "measure";
-
-    // Prevent dragging the map while measuring.
-    map.dragging.disable();
 
     measureButton.innerText =
         "Exit Measure";
