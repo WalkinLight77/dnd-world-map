@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>D&D World Map</title>
+
+    <link
+        rel="stylesheet"
+        href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    >
+
+    <style>
+        html, body {
+            height: 100%;
+            margin: 0;
+            background: #111;
+            font-family: Arial, sans-serif;
+        }
+
+        #map {
+            width: 100%;
+            height: 100%;
+        }
+
+        #toolbar {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+
+            background: rgba(20, 20, 20, 0.92);
+            color: white;
+
+            padding: 10px;
+            border-radius: 8px;
+
+            display: flex;
+            gap: 8px;
+            align-items: center;
+
+            box-shadow: 0 2px 8px rgba(0,0,0,.5);
+        }
+
+        button {
+            padding: 8px 12px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        #status {
+            min-width: 220px;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        @media (max-width: 700px) {
+            #toolbar {
+                width: 90%;
+                flex-wrap: wrap;
+                justify-content: center;
+            }
+
+            #status {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div id="toolbar">
+    <button id="calibrateButton">Calibrate 50 Miles</button>
+    <button id="measureButton">Measure</button>
+    <button id="clearButton">Clear</button>
+
+    <span id="status">Loading map...</span>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+
+const IMAGE_URL = "map.png";
+const CALIBRATION_MILES = 50;
+
+const map = L.map("map", {
+    crs: L.CRS.Simple,
+    minZoom: -5,
+    zoomSnap: 0.25
+});
+
+let mode = "measure";
+
+let calibrationPoints = [];
+let measurementPoints = [];
+
+let temporaryLayers = [];
+
+let pixelsPerMile =
+    parseFloat(localStorage.getItem("pixelsPerMile")) || null;
+
+const statusText = document.getElementById("status");
+
+const image = new Image();
+
+image.onload = function () {
+
+    const width = image.naturalWidth;
+    const height = image.naturalHeight;
+
+    const bounds = [
+        [0, 0],
+        [height, width]
+    ];
+
+    L.imageOverlay(IMAGE_URL, bounds).addTo(map);
+
+    map.fitBounds(bounds);
+
+    map.setMaxBounds([
+        [-height * 0.2, -width * 0.2],
+        [height * 1.2, width * 1.2]
+    ]);
+
+    updateStatus();
+};
+
+image.onerror = function () {
+    statusText.innerText =
+        "Map not found. Upload your image as map.png";
+};
+
+image.src = IMAGE_URL;
+
+
+function pixelDistance(pointA, pointB) {
+
+    const x = pointB.lng - pointA.lng;
+    const y = pointB.lat - pointA.lat;
+
+    return Math.sqrt((x * x) + (y * y));
+}
+
+
+function addPoint(point) {
+
+    const marker = L.circleMarker(point, {
+        radius: 6,
+        weight: 2,
+        fillOpacity: 1
+    }).addTo(map);
+
+    temporaryLayers.push(marker);
+}
+
+
+function addLine(pointA, pointB) {
+
+    const line = L.polyline(
+        [pointA, pointB],
+        {
+            weight: 3
+        }
+    ).addTo(map);
+
+    temporaryLayers.push(line);
+}
+
+
+function clearMapMarks() {
+
+    temporaryLayers.forEach(layer => {
+        map.removeLayer(layer);
+    });
+
+    temporaryLayers = [];
+
+    calibrationPoints = [];
+    measurementPoints = [];
+
+    updateStatus();
+}
+
+
+function updateStatus() {
+
+    if (pixelsPerMile) {
+        statusText.innerText =
+            "Ready — map calibrated.";
+    } else {
+        statusText.innerText =
+            "Calibrate the map before measuring.";
+    }
+}
+
+
+document
+.getElementById("calibrateButton")
+.addEventListener("click", function () {
+
+    clearMapMarks();
+
+    mode = "calibrate";
+
+    statusText.innerText =
+        "Click two points exactly 50 miles apart.";
+});
+
+
+document
+.getElementById("measureButton")
+.addEventListener("click", function () {
+
+    if (!pixelsPerMile) {
+
+        statusText.innerText =
+            "Calibrate the map first.";
+
+        return;
+    }
+
+    clearMapMarks();
+
+    mode = "measure";
+
+    statusText.innerText =
+        "Click points along your route.";
+});
+
+
+document
+.getElementById("clearButton")
+.addEventListener("click", function () {
+
+    clearMapMarks();
+
+    mode = "measure";
+});
+
+
+map.on("click", function (event) {
+
+    const point = event.latlng;
+
+    if (mode === "calibrate") {
+
+        calibrationPoints.push(point);
+
+        addPoint(point);
+
+        if (calibrationPoints.length === 2) {
+
+            addLine(
+                calibrationPoints[0],
+                calibrationPoints[1]
+            );
+
+            const pixels = pixelDistance(
+                calibrationPoints[0],
+                calibrationPoints[1]
+            );
+
+            pixelsPerMile =
+                pixels / CALIBRATION_MILES;
+
+            localStorage.setItem(
+                "pixelsPerMile",
+                pixelsPerMile
+            );
+
+            statusText.innerText =
+                "Calibration saved: 50 miles.";
+
+            mode = "measure";
+        }
+
+        return;
+    }
+
+
+    if (mode === "measure") {
+
+        if (!pixelsPerMile) {
+
+            statusText.innerText =
+                "Calibrate the map first.";
+
+            return;
+        }
+
+        measurementPoints.push(point);
+
+        addPoint(point);
+
+        if (measurementPoints.length > 1) {
+
+            const previous =
+                measurementPoints[
+                    measurementPoints.length - 2
+                ];
+
+            addLine(previous, point);
+        }
+
+
+        if (measurementPoints.length >= 2) {
+
+            let totalPixels = 0;
+
+            for (
+                let i = 1;
+                i < measurementPoints.length;
+                i++
+            ) {
+
+                totalPixels += pixelDistance(
+                    measurementPoints[i - 1],
+                    measurementPoints[i]
+                );
+            }
+
+            const totalMiles =
+                totalPixels / pixelsPerMile;
+
+            statusText.innerText =
+                "Distance: " +
+                totalMiles.toFixed(1) +
+                " miles";
+        }
+    }
+});
+
+</script>
+
+</body>
+</html>
