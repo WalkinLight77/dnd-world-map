@@ -100,19 +100,33 @@ const map = L.map("map", {
 let mode = "none";
 
 let calibrationPoints = [];
-let measurementPoints = [];
+let calibrationLayers = [];
 
-let mapLayers = [];
+let routeLayers = [];
+let routePoints = [];
 
-let previewLine = null;
+let drawing = false;
+let routeLine = null;
+
+let lastRoutePoint = null;
+let lastScreenPoint = null;
+
+let lockedMiles = 0;
+
 let liveTooltip = null;
 
 let pixelsPerMile =
     parseFloat(localStorage.getItem("pixelsPerMile")) || null;
 
 const statusText = document.getElementById("status");
+const measureButton = document.getElementById("measureButton");
 
 const image = new Image();
+
+
+// =========================
+// LOAD MAP
+// =========================
 
 image.onload = function () {
 
@@ -124,7 +138,10 @@ image.onload = function () {
         [height, width]
     ];
 
-    L.imageOverlay(IMAGE_URL, bounds).addTo(map);
+    L.imageOverlay(
+        IMAGE_URL,
+        bounds
+    ).addTo(map);
 
     map.fitBounds(bounds);
 
@@ -137,126 +154,88 @@ image.onload = function () {
 };
 
 image.onerror = function () {
-    statusText.innerText = "Map image could not be loaded.";
+
+    statusText.innerText =
+        "Map image could not be loaded.";
 };
 
 image.src = IMAGE_URL;
 
 
-function pixelDistance(pointA, pointB) {
+// =========================
+// DISTANCE FUNCTIONS
+// =========================
 
-    const x = pointB.lng - pointA.lng;
-    const y = pointB.lat - pointA.lat;
+function pixelDistance(a, b) {
 
-    return Math.sqrt((x * x) + (y * y));
-}
+    const x = b.lng - a.lng;
+    const y = b.lat - a.lat;
 
-
-function milesBetween(pointA, pointB) {
-
-    return pixelDistance(pointA, pointB) / pixelsPerMile;
-}
-
-
-function getTotalMiles(extraPoint = null) {
-
-    let total = 0;
-
-    for (let i = 1; i < measurementPoints.length; i++) {
-
-        total += milesBetween(
-            measurementPoints[i - 1],
-            measurementPoints[i]
-        );
-    }
-
-    if (
-        extraPoint &&
-        measurementPoints.length > 0
-    ) {
-
-        total += milesBetween(
-            measurementPoints[
-                measurementPoints.length - 1
-            ],
-            extraPoint
-        );
-    }
-
-    return total;
-}
-
-
-function addPoint(point) {
-
-    const marker = L.circleMarker(point, {
-        radius: 5,
-        weight: 2,
-        fillOpacity: 1
-    }).addTo(map);
-
-    mapLayers.push(marker);
-
-    return marker;
-}
-
-
-function addSegment(pointA, pointB) {
-
-    const miles = milesBetween(pointA, pointB);
-
-    const line = L.polyline(
-        [pointA, pointB],
-        {
-            weight: 3
-        }
-    ).addTo(map);
-
-    mapLayers.push(line);
-
-    const midpoint = L.latLng(
-        (pointA.lat + pointB.lat) / 2,
-        (pointA.lng + pointB.lng) / 2
+    return Math.sqrt(
+        (x * x) +
+        (y * y)
     );
-
-    const label = L.tooltip({
-        permanent: true,
-        direction: "center",
-        className: "distance-label"
-    })
-    .setLatLng(midpoint)
-    .setContent(miles.toFixed(1) + " mi")
-    .addTo(map);
-
-    mapLayers.push(label);
 }
 
 
-function removePreview() {
+function milesBetween(a, b) {
 
-    if (previewLine) {
-        map.removeLayer(previewLine);
-        previewLine = null;
+    if (!pixelsPerMile) {
+        return 0;
     }
+
+    return pixelDistance(a, b) / pixelsPerMile;
+}
+
+
+// =========================
+// ROUTE MANAGEMENT
+// =========================
+
+function clearRoute() {
+
+    routeLayers.forEach(layer => {
+
+        if (map.hasLayer(layer)) {
+            map.removeLayer(layer);
+        }
+
+    });
+
+    routeLayers = [];
+    routePoints = [];
+
+    routeLine = null;
+
+    drawing = false;
+
+    lastRoutePoint = null;
+    lastScreenPoint = null;
+
+    lockedMiles = 0;
 
     if (liveTooltip) {
-        map.removeLayer(liveTooltip);
+
+        if (map.hasLayer(liveTooltip)) {
+            map.removeLayer(liveTooltip);
+        }
+
         liveTooltip = null;
     }
 }
 
 
-function clearMeasurement() {
+function clearCalibrationMarks() {
 
-    removePreview();
+    calibrationLayers.forEach(layer => {
 
-    mapLayers.forEach(layer => {
-        map.removeLayer(layer);
+        if (map.hasLayer(layer)) {
+            map.removeLayer(layer);
+        }
+
     });
 
-    mapLayers = [];
-
-    measurementPoints = [];
+    calibrationLayers = [];
     calibrationPoints = [];
 }
 
@@ -276,21 +255,33 @@ function updateStatus() {
 }
 
 
+// =========================
+// CALIBRATION BUTTON
+// =========================
+
 document
 .getElementById("calibrateButton")
 .addEventListener("click", function () {
 
-    clearMeasurement();
+    clearRoute();
+    clearCalibrationMarks();
 
     mode = "calibrate";
+
+    map.dragging.enable();
+
+    measureButton.innerText = "Measure";
 
     statusText.innerText =
         "Click two points exactly 50 miles apart.";
 });
 
 
-document
-.getElementById("measureButton")
+// =========================
+// MEASURE BUTTON
+// =========================
+
+measureButton
 .addEventListener("click", function () {
 
     if (!pixelsPerMile) {
@@ -301,170 +292,401 @@ document
         return;
     }
 
-    clearMeasurement();
+
+    // EXIT MEASURE MODE
+    if (mode === "measure") {
+
+        mode = "none";
+
+        drawing = false;
+
+        map.dragging.enable();
+
+        measureButton.innerText =
+            "Measure";
+
+        statusText.innerText =
+            "Measurement finished.";
+
+        return;
+    }
+
+
+    // ENTER MEASURE MODE
+
+    clearRoute();
+    clearCalibrationMarks();
 
     mode = "measure";
 
+    /*
+        Disable normal map dragging.
+        Left mouse drag now becomes the ruler.
+    */
+
+    map.dragging.disable();
+
+    measureButton.innerText =
+        "Exit Measure";
+
     statusText.innerText =
-        "Click your starting point.";
+        "Hold left mouse button and drag along your route.";
 });
 
+
+// =========================
+// CLEAR BUTTON
+// =========================
 
 document
 .getElementById("clearButton")
 .addEventListener("click", function () {
 
-    clearMeasurement();
+    clearRoute();
+    clearCalibrationMarks();
 
     mode = "none";
+
+    map.dragging.enable();
+
+    measureButton.innerText =
+        "Measure";
 
     updateStatus();
 });
 
 
+// =========================
+// CALIBRATION CLICKS
+// =========================
+
 map.on("click", function (event) {
+
+    if (mode !== "calibrate") {
+        return;
+    }
 
     const point = event.latlng;
 
+    calibrationPoints.push(point);
 
-    if (mode === "calibrate") {
-
-        calibrationPoints.push(point);
-
-        addPoint(point);
-
-        if (calibrationPoints.length === 2) {
-
-            const line = L.polyline(
-                calibrationPoints,
-                {
-                    weight: 3
-                }
-            ).addTo(map);
-
-            mapLayers.push(line);
-
-            const pixels = pixelDistance(
-                calibrationPoints[0],
-                calibrationPoints[1]
-            );
-
-            pixelsPerMile =
-                pixels / CALIBRATION_MILES;
-
-            localStorage.setItem(
-                "pixelsPerMile",
-                pixelsPerMile
-            );
-
-            statusText.innerText =
-                "Calibration saved — 50 miles.";
-
-            mode = "none";
+    const marker = L.circleMarker(
+        point,
+        {
+            radius: 6,
+            weight: 2,
+            fillOpacity: 1
         }
+    ).addTo(map);
 
+    calibrationLayers.push(marker);
+
+
+    if (calibrationPoints.length === 2) {
+
+        const line = L.polyline(
+            calibrationPoints,
+            {
+                weight: 3
+            }
+        ).addTo(map);
+
+        calibrationLayers.push(line);
+
+
+        const pixels = pixelDistance(
+            calibrationPoints[0],
+            calibrationPoints[1]
+        );
+
+        pixelsPerMile =
+            pixels / CALIBRATION_MILES;
+
+
+        localStorage.setItem(
+            "pixelsPerMile",
+            pixelsPerMile
+        );
+
+
+        statusText.innerText =
+            "Calibration saved — that distance is 50 miles.";
+
+        mode = "none";
+    }
+});
+
+
+// =========================
+// BEGIN DRAWING
+// =========================
+
+map.on("mousedown", function (event) {
+
+    if (mode !== "measure") {
         return;
     }
 
 
-    if (mode === "measure") {
-
-        removePreview();
-
-        if (measurementPoints.length === 0) {
-
-            measurementPoints.push(point);
-
-            addPoint(point);
-
-            statusText.innerText =
-                "Starting point placed — move mouse to measure.";
-
-            return;
-        }
-
-
-        const previousPoint =
-            measurementPoints[
-                measurementPoints.length - 1
-            ];
-
-        measurementPoints.push(point);
-
-        addPoint(point);
-
-        addSegment(previousPoint, point);
-
-        const totalMiles = getTotalMiles();
-
-        statusText.innerText =
-            "Total: " +
-            totalMiles.toFixed(1) +
-            " miles";
+    if (
+        event.originalEvent &&
+        event.originalEvent.button !== 0
+    ) {
+        return;
     }
+
+
+    /*
+        Starting another drag begins
+        a new measurement.
+    */
+
+    clearRoute();
+
+
+    drawing = true;
+
+    const point = event.latlng;
+
+    routePoints.push(point);
+
+    lastRoutePoint = point;
+
+    lastScreenPoint =
+        map.latLngToContainerPoint(point);
+
+
+    routeLine = L.polyline(
+        [point],
+        {
+            weight: 4,
+            lineCap: "round",
+            lineJoin: "round"
+        }
+    ).addTo(map);
+
+    routeLayers.push(routeLine);
+
+
+    const startMarker = L.circleMarker(
+        point,
+        {
+            radius: 5,
+            weight: 2,
+            fillOpacity: 1
+        }
+    ).addTo(map);
+
+    routeLayers.push(startMarker);
+
+
+    liveTooltip = L.tooltip({
+        direction: "top",
+        offset: [0, -12],
+        opacity: 0.95
+    })
+    .setLatLng(point)
+    .setContent("<b>0.0 miles</b>")
+    .addTo(map);
+
+
+    statusText.innerText =
+        "Distance: 0.0 miles";
 });
 
+
+// =========================
+// DRAW WHILE DRAGGING
+// =========================
 
 map.on("mousemove", function (event) {
 
     if (
         mode !== "measure" ||
-        measurementPoints.length === 0
+        !drawing
     ) {
         return;
     }
 
-    removePreview();
 
-    const previousPoint =
-        measurementPoints[
-            measurementPoints.length - 1
-        ];
+    const point = event.latlng;
 
-    const currentPoint = event.latlng;
-
-    previewLine = L.polyline(
-        [previousPoint, currentPoint],
-        {
-            weight: 2,
-            dashArray: "6, 6"
-        }
-    ).addTo(map);
+    const screenPoint =
+        map.latLngToContainerPoint(point);
 
 
-    const segmentMiles =
+    /*
+        Only permanently record another point
+        after the mouse has moved a few screen
+        pixels.
+
+        This keeps the path smooth without
+        creating thousands of unnecessary points.
+    */
+
+    const screenDistance =
+        lastScreenPoint.distanceTo(screenPoint);
+
+
+    let previewMiles =
+        lockedMiles +
         milesBetween(
-            previousPoint,
-            currentPoint
+            lastRoutePoint,
+            point
         );
 
-    const totalMiles =
-        getTotalMiles(currentPoint);
+
+    if (screenDistance >= 3) {
+
+        lockedMiles +=
+            milesBetween(
+                lastRoutePoint,
+                point
+            );
 
 
-    liveTooltip = L.tooltip({
-        direction: "top",
-        offset: [0, -10]
-    })
-    .setLatLng(currentPoint)
-    .setContent(
-        "<b>" +
-        segmentMiles.toFixed(1) +
-        " mi</b><br>" +
-        "Total: " +
-        totalMiles.toFixed(1) +
-        " mi"
-    )
-    .addTo(map);
+        routePoints.push(point);
+
+        lastRoutePoint = point;
+        lastScreenPoint = screenPoint;
+
+        previewMiles = lockedMiles;
+    }
+
+
+    /*
+        Add the current cursor location
+        temporarily so the line follows
+        your mouse perfectly.
+    */
+
+    routeLine.setLatLngs(
+        routePoints.concat([point])
+    );
+
+
+    liveTooltip
+        .setLatLng(point)
+        .setContent(
+            "<b>" +
+            previewMiles.toFixed(1) +
+            " miles</b>"
+        );
 
 
     statusText.innerText =
-        "Segment: " +
-        segmentMiles.toFixed(1) +
-        " mi | Total: " +
-        totalMiles.toFixed(1) +
-        " mi";
+        "Distance: " +
+        previewMiles.toFixed(1) +
+        " miles";
 });
+
+
+// =========================
+// FINISH DRAWING
+// =========================
+
+map.on("mouseup", function (event) {
+
+    if (
+        mode !== "measure" ||
+        !drawing
+    ) {
+        return;
+    }
+
+
+    const point = event.latlng;
+
+
+    lockedMiles +=
+        milesBetween(
+            lastRoutePoint,
+            point
+        );
+
+
+    routePoints.push(point);
+
+    routeLine.setLatLngs(routePoints);
+
+
+    drawing = false;
+
+
+    if (liveTooltip) {
+
+        map.removeLayer(liveTooltip);
+
+        liveTooltip = null;
+    }
+
+
+    const endMarker = L.circleMarker(
+        point,
+        {
+            radius: 5,
+            weight: 2,
+            fillOpacity: 1
+        }
+    ).addTo(map);
+
+    routeLayers.push(endMarker);
+
+
+    const finalLabel = L.tooltip({
+        permanent: true,
+        direction: "top",
+        offset: [0, -10],
+        className: "final-distance-label"
+    })
+    .setLatLng(point)
+    .setContent(
+        "<b>" +
+        lockedMiles.toFixed(1) +
+        " miles</b>"
+    )
+    .addTo(map);
+
+    routeLayers.push(finalLabel);
+
+
+    statusText.innerText =
+        "Total Distance: " +
+        lockedMiles.toFixed(1) +
+        " miles";
+});
+
+
+// =========================
+// ESCAPE KEY
+// =========================
+
+document.addEventListener(
+    "keydown",
+    function (event) {
+
+        if (event.key === "Escape") {
+
+            drawing = false;
+
+            mode = "none";
+
+            map.dragging.enable();
+
+            measureButton.innerText =
+                "Measure";
+
+            if (liveTooltip) {
+
+                map.removeLayer(liveTooltip);
+                liveTooltip = null;
+            }
+
+            statusText.innerText =
+                "Measurement finished.";
+        }
+    }
+);
 
 </script>
 
