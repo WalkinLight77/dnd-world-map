@@ -75,7 +75,7 @@
 <body>
 
 <div id="toolbar">
-    <button id="calibrateButton">Calibrate 50 Miles</button>
+    <button id="calibrateButton" style="display:none;">Calibrate 50 Miles</button>
     <button id="measureButton">Measure</button>
     <button id="clearButton">Clear</button>
 
@@ -100,8 +100,7 @@ const map = L.map("map", {
 
 let mode = "none";
 
-let pixelsPerMile =
-    parseFloat(localStorage.getItem("pixelsPerMile")) || null;
+let pixelsPerMile = 1.5202795795510793;
 
 
 // ======================================
