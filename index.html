@@ -97,12 +97,15 @@ const map = L.map("map", {
     zoomSnap: 0.25
 });
 
-let mode = "measure";
+let mode = "none";
 
 let calibrationPoints = [];
 let measurementPoints = [];
 
-let temporaryLayers = [];
+let mapLayers = [];
+
+let previewLine = null;
+let liveTooltip = null;
 
 let pixelsPerMile =
     parseFloat(localStorage.getItem("pixelsPerMile")) || null;
@@ -134,8 +137,7 @@ image.onload = function () {
 };
 
 image.onerror = function () {
-    statusText.innerText =
-        "Map not found. Upload your image as map.png";
+    statusText.innerText = "Map image could not be loaded.";
 };
 
 image.src = IMAGE_URL;
@@ -150,19 +152,58 @@ function pixelDistance(pointA, pointB) {
 }
 
 
+function milesBetween(pointA, pointB) {
+
+    return pixelDistance(pointA, pointB) / pixelsPerMile;
+}
+
+
+function getTotalMiles(extraPoint = null) {
+
+    let total = 0;
+
+    for (let i = 1; i < measurementPoints.length; i++) {
+
+        total += milesBetween(
+            measurementPoints[i - 1],
+            measurementPoints[i]
+        );
+    }
+
+    if (
+        extraPoint &&
+        measurementPoints.length > 0
+    ) {
+
+        total += milesBetween(
+            measurementPoints[
+                measurementPoints.length - 1
+            ],
+            extraPoint
+        );
+    }
+
+    return total;
+}
+
+
 function addPoint(point) {
 
     const marker = L.circleMarker(point, {
-        radius: 6,
+        radius: 5,
         weight: 2,
         fillOpacity: 1
     }).addTo(map);
 
-    temporaryLayers.push(marker);
+    mapLayers.push(marker);
+
+    return marker;
 }
 
 
-function addLine(pointA, pointB) {
+function addSegment(pointA, pointB) {
+
+    const miles = milesBetween(pointA, pointB);
 
     const line = L.polyline(
         [pointA, pointB],
@@ -171,31 +212,64 @@ function addLine(pointA, pointB) {
         }
     ).addTo(map);
 
-    temporaryLayers.push(line);
+    mapLayers.push(line);
+
+    const midpoint = L.latLng(
+        (pointA.lat + pointB.lat) / 2,
+        (pointA.lng + pointB.lng) / 2
+    );
+
+    const label = L.tooltip({
+        permanent: true,
+        direction: "center",
+        className: "distance-label"
+    })
+    .setLatLng(midpoint)
+    .setContent(miles.toFixed(1) + " mi")
+    .addTo(map);
+
+    mapLayers.push(label);
 }
 
 
-function clearMapMarks() {
+function removePreview() {
 
-    temporaryLayers.forEach(layer => {
+    if (previewLine) {
+        map.removeLayer(previewLine);
+        previewLine = null;
+    }
+
+    if (liveTooltip) {
+        map.removeLayer(liveTooltip);
+        liveTooltip = null;
+    }
+}
+
+
+function clearMeasurement() {
+
+    removePreview();
+
+    mapLayers.forEach(layer => {
         map.removeLayer(layer);
     });
 
-    temporaryLayers = [];
+    mapLayers = [];
 
-    calibrationPoints = [];
     measurementPoints = [];
-
-    updateStatus();
+    calibrationPoints = [];
 }
 
 
 function updateStatus() {
 
     if (pixelsPerMile) {
+
         statusText.innerText =
             "Ready — map calibrated.";
+
     } else {
+
         statusText.innerText =
             "Calibrate the map before measuring.";
     }
@@ -206,7 +280,7 @@ document
 .getElementById("calibrateButton")
 .addEventListener("click", function () {
 
-    clearMapMarks();
+    clearMeasurement();
 
     mode = "calibrate";
 
@@ -227,12 +301,12 @@ document
         return;
     }
 
-    clearMapMarks();
+    clearMeasurement();
 
     mode = "measure";
 
     statusText.innerText =
-        "Click points along your route.";
+        "Click your starting point.";
 });
 
 
@@ -240,15 +314,18 @@ document
 .getElementById("clearButton")
 .addEventListener("click", function () {
 
-    clearMapMarks();
+    clearMeasurement();
 
-    mode = "measure";
+    mode = "none";
+
+    updateStatus();
 });
 
 
 map.on("click", function (event) {
 
     const point = event.latlng;
+
 
     if (mode === "calibrate") {
 
@@ -258,10 +335,14 @@ map.on("click", function (event) {
 
         if (calibrationPoints.length === 2) {
 
-            addLine(
-                calibrationPoints[0],
-                calibrationPoints[1]
-            );
+            const line = L.polyline(
+                calibrationPoints,
+                {
+                    weight: 3
+                }
+            ).addTo(map);
+
+            mapLayers.push(line);
 
             const pixels = pixelDistance(
                 calibrationPoints[0],
@@ -277,9 +358,9 @@ map.on("click", function (event) {
             );
 
             statusText.innerText =
-                "Calibration saved: 50 miles.";
+                "Calibration saved — 50 miles.";
 
-            mode = "measure";
+            mode = "none";
         }
 
         return;
@@ -288,54 +369,101 @@ map.on("click", function (event) {
 
     if (mode === "measure") {
 
-        if (!pixelsPerMile) {
+        removePreview();
+
+        if (measurementPoints.length === 0) {
+
+            measurementPoints.push(point);
+
+            addPoint(point);
 
             statusText.innerText =
-                "Calibrate the map first.";
+                "Starting point placed — move mouse to measure.";
 
             return;
         }
+
+
+        const previousPoint =
+            measurementPoints[
+                measurementPoints.length - 1
+            ];
 
         measurementPoints.push(point);
 
         addPoint(point);
 
-        if (measurementPoints.length > 1) {
+        addSegment(previousPoint, point);
 
-            const previous =
-                measurementPoints[
-                    measurementPoints.length - 2
-                ];
+        const totalMiles = getTotalMiles();
 
-            addLine(previous, point);
-        }
-
-
-        if (measurementPoints.length >= 2) {
-
-            let totalPixels = 0;
-
-            for (
-                let i = 1;
-                i < measurementPoints.length;
-                i++
-            ) {
-
-                totalPixels += pixelDistance(
-                    measurementPoints[i - 1],
-                    measurementPoints[i]
-                );
-            }
-
-            const totalMiles =
-                totalPixels / pixelsPerMile;
-
-            statusText.innerText =
-                "Distance: " +
-                totalMiles.toFixed(1) +
-                " miles";
-        }
+        statusText.innerText =
+            "Total: " +
+            totalMiles.toFixed(1) +
+            " miles";
     }
+});
+
+
+map.on("mousemove", function (event) {
+
+    if (
+        mode !== "measure" ||
+        measurementPoints.length === 0
+    ) {
+        return;
+    }
+
+    removePreview();
+
+    const previousPoint =
+        measurementPoints[
+            measurementPoints.length - 1
+        ];
+
+    const currentPoint = event.latlng;
+
+    previewLine = L.polyline(
+        [previousPoint, currentPoint],
+        {
+            weight: 2,
+            dashArray: "6, 6"
+        }
+    ).addTo(map);
+
+
+    const segmentMiles =
+        milesBetween(
+            previousPoint,
+            currentPoint
+        );
+
+    const totalMiles =
+        getTotalMiles(currentPoint);
+
+
+    liveTooltip = L.tooltip({
+        direction: "top",
+        offset: [0, -10]
+    })
+    .setLatLng(currentPoint)
+    .setContent(
+        "<b>" +
+        segmentMiles.toFixed(1) +
+        " mi</b><br>" +
+        "Total: " +
+        totalMiles.toFixed(1) +
+        " mi"
+    )
+    .addTo(map);
+
+
+    statusText.innerText =
+        "Segment: " +
+        segmentMiles.toFixed(1) +
+        " mi | Total: " +
+        totalMiles.toFixed(1) +
+        " mi";
 });
 
 </script>
