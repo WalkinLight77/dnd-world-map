@@ -538,6 +538,8 @@ measureButton.addEventListener("click", function () {
 
 mode = "measure";
 
+map.getContainer().style.cursor = "crosshair";
+
 measureButton.innerText =
     "Exit Measure";
 
@@ -558,6 +560,8 @@ document
     clearCalibrationMarks();
 
     mode = "none";
+
+    map.getContainer().style.cursor = "";
 
     measureButton.innerText =
         "Measure";
@@ -858,6 +862,10 @@ document.addEventListener(
 
         // Escape again exits measure mode.
         mode = "none";
+
+        map.getContainer().style.cursor = "";
+
+        map.dragging.enable();
 
         measureButton.innerText =
             "Measure";
