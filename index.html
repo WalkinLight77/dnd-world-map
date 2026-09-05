@@ -538,7 +538,7 @@ measureButton.addEventListener("click", function () {
 
 mode = "measure";
 
-map.getContainer().style.cursor = "crosshair";
+map.getContainer().classList.add("measure-mode");
 
 measureButton.innerText =
     "Exit Measure";
@@ -561,7 +561,7 @@ document
 
     mode = "none";
 
-    map.getContainer().style.cursor = "";
+    
 
     measureButton.innerText =
         "Measure";
@@ -863,7 +863,7 @@ document.addEventListener(
         // Escape again exits measure mode.
         mode = "none";
 
-        map.getContainer().style.cursor = "";
+        map.getContainer().classList.remove("measure-mode");
 
         map.dragging.enable();
 
@@ -875,6 +875,14 @@ document.addEventListener(
     }
 );
 
+    #map.measure-mode,
+        
+#map.measure-mode .leaflet-map-pane,
+        
+#map.measure-mode .leaflet-map-pane * {
+    
+    cursor: crosshair !important;
+}
 </script>
 
 </body>
